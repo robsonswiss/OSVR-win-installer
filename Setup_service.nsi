@@ -16,6 +16,7 @@ limitations under the License. */
 !include "FileFunc.nsh"
 !include "x64.nsh"
 !include "WinVer.nsh"
+!include "MUI.nsh"
 
 ;--------------------------------
 ;The nsProcess provides simple macros for handling process control
@@ -24,10 +25,16 @@ limitations under the License. */
 ;--------------------------------
 ;The LogicLib provides some very simple macros that allow easy construction of complex logical structures, see LogicLib.nsh
 !include "LogicLib.nsh"
+
+!define MUI_COMPONENTSPAGE_SMALLDESC ;No value
+!define MUI_UI "myUI.exe" ;Value
+!define MUI_INSTFILESPAGE_COLORS "FFFFFF 000000" ;Two colors
   
 !define PRODUCT_NAME                "OSVR Services"
 !define PRODUCT_FRIENDLY_NAME       "OSVR Services"
-!define APP_EXE 					"osvr_server.exe"
+!define APP_EXE 					"OSVR_Server.exe"
+!define SERVICE_EXE 				"OSVR_Service.exe"
+!define SERVICE_NAME				"OSVR Service"
 !define APP_INSTALL_DIR       	    "$PROGRAMFILES\OSVR"
 !define LOCAL_DATA_PATH             "${APP_INSTALL_DIR}\Data\"
 !define UNINSTALL_DIR               "${APP_INSTALL_DIR}"
@@ -36,7 +43,7 @@ limitations under the License. */
 !define LOCAL_UNINSTALLER_NAME 		"Uninstall.exe"
 !define LOCAL_UNINSTALLER_DIR 		"${APP_INSTALL_DIR}"
 
-!define OSVRINSTALLLOG  " \..\ProgramData\OSVR\Logs\OSVRInstall.log"
+!define OSVRINSTALLLOG  "%temp%\OSVRInstall.log"
 
 ; Version number needs to be changed when we install a new distribution. It is appended to the installer name just to allow for easy identification
 !define REVISION                    XXXXX
@@ -246,20 +253,29 @@ SectionEnd
 Section "InitialCleanup" SEC01
   ${TimeStamp} $0
     LogEx::Write true true "$0:InitialCleanup"
-
-	${nsProcess::FindProcess} "${APP_EXE}" $R0
-    ;MessageBox MB_OK "nsProcess::FindProcess$\n$\n Errorlevel: [$R0]"
-
-	${If} $R0 == 0
-		DetailPrint "${APP_EXE} is running. Closing it down"
-		${nsProcess::KillProcess} "${APP_EXE}" $R0
-        ;MessageBox MB_OK "nsProcess::KillProcess$\n$\n Errorlevel: [$R0]"
-		DetailPrint "Waiting for ${APP_EXE} to close"
-		Sleep 2000  
-	${Else}
-		DetailPrint "${APP_EXE} was not found to be running"        
-	${EndIf}    
-
+	
+	 SimpleSC::ExistsService "${SERVICE_NAME}"
+	 Pop $0
+	${If} $0 = 0
+		SimpleSC::ServiceIsRunning "${SERVICE_NAME}"
+		Pop $0
+		${If} $0 = 0
+		DetailPrint "${SERVICE_NAME} is running. Closing it down"
+			SimpleSC::StopService "${SERVICE_NAME}" 1
+			DetailPrint "Removing the ${SERVICE_NAME}"
+			SimpleSC::RemoveService "${SERVICE_NAME}" 
+			Pop $0
+		${Else}
+		DetailPrint "${SERVICE_NAME} not started"
+		DetailPrint "Removing the ${SERVICE_NAME}"
+		SimpleSC::RemoveService "${SERVICE_NAME}" 
+		Pop $0  
+		${If} $0 = 0
+		DetailPrint "${SERVICE_NAME} removed"
+		${EndIf}
+	${EndIf}
+	${EndIf}
+	
     ;MessageBox MB_OK "nsProcess::Unload$\n$\n"
 	${nsProcess::Unload}
 SectionEnd
@@ -274,9 +290,14 @@ Section "MainInstall" SEC02
   SetOverwrite on
   SetOutPath "${APP_INSTALL_DIR}"
   
-   File /r /x . "${distroDirectory}\*.*"
-   
+  File /r /x . "${distroDirectory}\*.*"
   File osvr_server.ico
+  
+  SetOutPath "${APP_INSTALL_DIR}\bin"
+  File OSVR_Service.exe
+
+  CreateDirectory "C:\ProgramData\OSVR"
+  CreateDirectory "C:\ProgramData\OSVR\default"
 
 SectionEnd
 Section "EndInstall" SEC04
@@ -300,6 +321,8 @@ Section "EndInstall" SEC04
   CreateDirectory "$SMPROGRAMS\OSVR"
   CreateShortCut "$SMPROGRAMS\OSVR\osvr_server.lnk" "${APP_INSTALL_DIR}\bin\osvr_server.exe" "" "${APP_INSTALL_DIR}\osvr_server.ico"
   CreateShortCut "$SMPROGRAMS\OSVR\osvr_uninstall.lnk" "${APP_INSTALL_DIR}\uninstall.exe" "" "${APP_INSTALL_DIR}\osvr_server.ico"
+  SetOutPath "${APP_INSTALL_DIR}\Profiler"
+  CreateShortCut "$SMPROGRAMS\OSVR\osvr_config.lnk" "${APP_INSTALL_DIR}\Profiler\OSVR_Config.exe" "" "${APP_INSTALL_DIR}\osvr_server.ico"
 
   ; sets the default configuration file. If a user wants to change this, he will have to go in and edit the registry (no tools at the moment)
   ${TimeStamp} $0
@@ -307,8 +330,7 @@ Section "EndInstall" SEC04
 
   WriteRegStr HKLM "Software\OSVR" "InstallationDirectory"             "${APP_INSTALL_DIR}\"
   WriteRegStr HKLM "Software\OSVR" "InstalledVersion"             "${CCVERSION}"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}" '"${APP_INSTALL_DIR}\bin\osvr_server.exe" "${APP_INSTALL_DIR}\bin\osvr_server_config.json"'
- 
+  
   ; set up environment variables
   ; include for some of the windows messages defines
   !include "winmessages.nsh"
@@ -329,14 +351,34 @@ Section "EndInstall" SEC04
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\osvr_server" "NoModify" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\osvr_server" "NoRepair" 1
  
-  ; Execute the server if it exist, otherwise skip
-  IfFileExists "${APP_INSTALL_DIR}\bin\osvr_server.exe" 0 +2
-  Exec '"${APP_INSTALL_DIR}\bin\osvr_server.exe"'
+; Install and start service
+; DetailPrint "Installing ${SERVICE_NAME}"
+; SimpleSC::InstallService "${SERVICE_NAME}" "${SERVICE_NAME}" "16" "2" "${APP_INSTALL_DIR}\bin\OSVR_Service.exe" "" "" ""
+; Pop $0
+; ${If} $0 = 0
+; 	 DetailPrint "${SERVICE_NAME} installation successful."
+;	 ${EndIf}
+;  DetailPrint "Starting ${SERVICE_NAME}"
+;  SimpleSC::StartService "${SERVICE_NAME}" 1
+;  Pop $0
+;  ${If} $0 = 0
+;  	 DetailPrint "${SERVICE_NAME} started."
+;	 ${EndIf}
+;  ; Execute the server if it exist, otherwise skip
+  DetailPrint "Installing ${SERVICE_NAME}"
+  IfFileExists "${APP_INSTALL_DIR}\bin\OSVR_Service.exe" 0 +2
+  Exec '"${APP_INSTALL_DIR}\bin\OSVR_Service.exe" "-i"'
+  Sleep 5000
+  DetailPrint "Starting ${SERVICE_NAME}"
+  IfFileExists "${APP_INSTALL_DIR}\bin\OSVR_Service.exe" 0 +2
+  Exec '"${APP_INSTALL_DIR}\bin\OSVR_Service.exe" "-s"'
+  Sleep 5000
+  DetailPrint "Launching the OSVR configuration utility."
+  IfFileExists "${APP_INSTALL_DIR}\Profiler\OSVR_Config.exe" 0 +2
+  Exec '"${APP_INSTALL_DIR}\Profiler\OSVR_Config.exe"'
   
-   
- ${TimeStamp} $0
+  ${TimeStamp} $0
   LogEx::Write true true "$0:Finished with install"
-
   LogEx::Close
   
 SectionEnd
@@ -350,19 +392,27 @@ Section "Uninstall"
   ${TimeStamp} $0
   LogEx::Write true true "$0:Uninstall start"
 
-    ; Kill process first before uninstalling
-	${nsProcess::FindProcess} "${APP_EXE}" $R0
-	;MessageBox MB_OK "nsProcess::FindProcess$\n$\n Errorlevel: [$R0]"
-
-	${If} $R0 == 0
-		DetailPrint "${APP_EXE} is running. Closing it down"
-		${nsProcess::KillProcess} "${APP_EXE}" $R0
-		;MessageBox MB_OK "nsProcess::KillProcess$\n$\n Errorlevel: [$R0]"
-		DetailPrint "Waiting for ${APP_EXE} to close"
-		Sleep 2000  
-	${Else}
-		DetailPrint "${APP_EXE} was not found to be running"        
-	${EndIf}    
+	 SimpleSC::ExistsService "${SERVICE_NAME}"
+	 Pop $0
+	${If} $0 = 0
+		SimpleSC::ServiceIsRunning "${SERVICE_NAME}"
+		Pop $0
+		${If} $0 = 0
+		DetailPrint "${SERVICE_NAME} is running. Closing it down"
+			SimpleSC::StopService "${SERVICE_NAME}" 1
+			DetailPrint "Removing the ${SERVICE_NAME}"
+			SimpleSC::RemoveService "${SERVICE_NAME}" 
+			Pop $0
+		${Else}
+		DetailPrint "${SERVICE_NAME} not started"
+		DetailPrint "Removing the ${SERVICE_NAME}"
+		SimpleSC::RemoveService "${SERVICE_NAME}" 
+		Pop $0  
+		${If} $0 = 0
+		DetailPrint "${SERVICE_NAME} removed"
+		${EndIf}
+	${EndIf}
+	${EndIf}
 
 	;MessageBox MB_OK "nsProcess::Unload$\n$\n"
 	${nsProcess::Unload}
@@ -381,6 +431,7 @@ Section "Uninstall"
  
   Delete "$SMPROGRAMS\OSVR\osvr_server.lnk"
   Delete "$SMPROGRAMS\OSVR\osvr_uninstall.lnk"
+  Delete "$SMPROGRAMS\OSVR\osvr_config.lnk"
   RMDIR /r  "$SMPROGRAMS\OSVR"
 	
   ; Delete the app folder
